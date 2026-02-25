@@ -9,13 +9,13 @@ import com.intellij.openapi.fileChooser.FileChooserDescriptor
 import com.intellij.openapi.fileChooser.FileChooserFactory
 import com.intellij.openapi.fileChooser.FileSaverDescriptor
 import com.intellij.openapi.fileTypes.FileTypeManager
-import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.JBMenuItem
 import com.intellij.openapi.ui.JBPopupMenu
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.util.IconLoader
 import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.openapi.vfs.isFile
 import com.intellij.ui.ColoredTreeCellRenderer
 import com.intellij.ui.PopupHandler
 import com.intellij.ui.TreeUIHelper
@@ -23,19 +23,24 @@ import com.intellij.ui.components.JBPanel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.treeStructure.Tree
 import kotlinx.coroutines.*
+import space.zhangjing.oss.bus.OSS_UPLOADED_TOPIC
+import space.zhangjing.oss.bus.UploadedListener
+import space.zhangjing.oss.bus.subscribe
 import space.zhangjing.oss.entity.Credential
+import space.zhangjing.oss.entity.Credential.Companion.eq
 import space.zhangjing.oss.ui.ObjectPropertiesDialog
-import space.zhangjing.oss.utils.OSSUploader.createUrl
+import space.zhangjing.oss.utils.*
+import space.zhangjing.oss.utils.OSSUtils.createUrl
 import space.zhangjing.oss.utils.PluginBundle.message
-import space.zhangjing.oss.utils.copy
-import space.zhangjing.oss.utils.debug
-import space.zhangjing.oss.utils.notification
 import java.awt.BorderLayout
 import java.awt.Component
+import java.awt.datatransfer.DataFlavor
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
+import java.io.File
 import javax.swing.JTree
 import javax.swing.SwingUtilities
+import javax.swing.TransferHandler
 import javax.swing.event.TreeExpansionEvent
 import javax.swing.event.TreeWillExpandListener
 import javax.swing.tree.DefaultMutableTreeNode
@@ -43,6 +48,7 @@ import javax.swing.tree.DefaultTreeModel
 import javax.swing.tree.TreePath
 import javax.swing.tree.TreeSelectionModel
 import kotlin.coroutines.cancellation.CancellationException
+import kotlin.io.path.absolutePathString
 
 class OSSBrowserPanel(
     private val project: Project,
@@ -88,7 +94,59 @@ class OSSBrowserPanel(
         setupTree()
         setupPopupMenu()
         setupListeners()
+        setupDrag()
         loadRoot()
+        OSS_UPLOADED_TOPIC.subscribe(this, object : UploadedListener {
+            override fun uploaded(credential: Credential, path: String) {
+                if (!credential.eq(this@OSSBrowserPanel.credential)) {
+                    return
+                }
+                scope.launch {
+                    val parts = path
+                        .trim('/')
+                        .split("/")
+                        .filter { it.isNotBlank() } + null
+                    var current: DefaultMutableTreeNode = treeRoot
+                    for (part in parts) {
+                        val child: DefaultMutableTreeNode
+                        try {
+                            child = findChild(current, part) ?: run {
+                                val items = suspendLoadNode(current).getOrNull() ?: return@launch
+                                SwingUtilities.invokeAndWait {
+                                    current.loadedNode(items)
+                                }
+                                findChild(current, part)
+                            } ?: return@launch
+                        } finally {
+                            SwingUtilities.invokeAndWait {
+                                val treePath = TreePath(current.path)
+                                if (!tree.isExpanded(treePath)) {
+                                    tree.expandPath(treePath)
+                                }
+                            }
+                        }
+                        current = child
+                    }
+                }
+            }
+        })
+    }
+
+    fun findChild(
+        parent: DefaultMutableTreeNode,
+        name: String?
+    ): DefaultMutableTreeNode? {
+        if (name == null) {
+            return null
+        }
+        val enumeration = parent.children()
+        while (enumeration.hasMoreElements()) {
+            val child = enumeration.nextElement() as DefaultMutableTreeNode
+            if ((child.userObject as TreeNodeData).displayName == name) {
+                return child
+            }
+        }
+        return null
     }
 
     private val TreeNodeData.canProperties get() = this is TreeNodeData.File
@@ -102,28 +160,11 @@ class OSSBrowserPanel(
 
     /** 加载节点内容 */
     private fun loadNode(node: DefaultMutableTreeNode) {
-        val data = node.userObject as? TreeNodeData ?: return
         node.showLoading(treeModel)
         scope.launch {
-            service.listObjects(data.objectPrefix).onSuccess { items ->
-                LOG.debug {
-                    "List objects: $items"
-                }
+            suspendLoadNode(node).onSuccess { items ->
                 SwingUtilities.invokeLater {
-                    LOG.debug {
-                        "Reload node: $node"
-                    }
-                    node.removeAllChildren()
-                    items.forEach { item ->
-                        val childNode = when (item) {
-                            is TreeNodeData.Folder -> DefaultMutableTreeNode(item).apply { add(createPlaceholderNode()) }
-                            is TreeNodeData.File -> DefaultMutableTreeNode(item)
-                            else -> null
-                        }
-                        if (childNode != null) node.add(childNode)
-                    }
-                    treeModel.reload(node)
-                    if (data is TreeNodeData.Folder) data.loaded = true
+                    node.loadedNode(items)
                 }
             }.onFailure { ex ->
                 LOG.warn("List objects error", ex)
@@ -132,6 +173,33 @@ class OSSBrowserPanel(
         }
     }
 
+
+    private suspend fun suspendLoadNode(node: DefaultMutableTreeNode): Result<List<TreeNodeData>> {
+        val data = node.userObject as? TreeNodeData ?: return Result.failure(RuntimeException("Invalid node"))
+        return service.listObjects(data.objectPrefix, isBrowse)
+    }
+
+    private fun DefaultMutableTreeNode.loadedNode(
+        items: List<TreeNodeData>
+    ) {
+        val data = userObject as? TreeNodeData ?: return
+        LOG.debug {
+            "List objects: $items"
+        }
+        removeAllChildren()
+        items.forEach { item ->
+            val childNode = when (item) {
+                is TreeNodeData.Folder -> DefaultMutableTreeNode(item).apply { add(createPlaceholderNode()) }
+                is TreeNodeData.File -> DefaultMutableTreeNode(item)
+                else -> null
+            }
+            if (childNode != null) {
+                add(childNode)
+            }
+        }
+        treeModel.reload(this)
+        if (data is TreeNodeData.Folder) data.loaded = true
+    }
 
     private fun setupTree() {
         tree.selectionModel.selectionMode =
@@ -178,7 +246,40 @@ class OSSBrowserPanel(
                 }
             }
         })
+
+
     }
+
+    private fun setupDrag() {
+        tree.dragEnabled = true
+        tree.transferHandler = object : TransferHandler() {
+            override fun canImport(support: TransferSupport): Boolean {
+                if (!support.isDrop) return false
+                if (!support.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) return false
+                val dropLocation = support.dropLocation as JTree.DropLocation
+                val path: TreePath = dropLocation.path ?: return false
+                val targetNode = path.lastPathComponent as DefaultMutableTreeNode
+                val nodeData = targetNode.userObject as TreeNodeData
+                return nodeData.canUpload
+            }
+
+            override fun importData(support: TransferSupport): Boolean {
+                if (!canImport(support)) return false
+                val dropLocation = support.dropLocation as JTree.DropLocation
+                val path: TreePath = dropLocation.path ?: return false
+                val targetNode = path.lastPathComponent as DefaultMutableTreeNode
+                val transferable = support.transferable
+                val files = transferable.getTransferData(DataFlavor.javaFileListFlavor) as? List<*>
+                    ?: return false
+                val fileArrays = files.filterIsInstance<File>().mapNotNull { it.toVirtualFile() }.toTypedArray()
+                scope.launch {
+                    uploadFiles(fileArrays, targetNode.userObject as TreeNodeData)
+                }
+                return true
+            }
+        }
+    }
+
 
     private fun setupPopupMenu() {
         popupMenu.add(newFolderItem)
@@ -337,29 +438,46 @@ class OSSBrowserPanel(
         val nodeData = parentNode.userObject as TreeNodeData
         // 创建文件选择器描述符，明确指定只能选择文件
         val fileChooserDescriptor = FileChooserDescriptor(
-            true,  // chooseFiles - 允许选择文件
-            false, // chooseFolders - 不允许选择目录
-            true, // chooseJars - 允许选择JAR文件
-            true, // chooseJarsAsFiles - 允许将JAR作为文件选择
-            true, // chooseJarContents - 允许选择JAR内容
-            false  // chooseMultiple - 不允许选择多个文件
+            true,  // chooseFiles -选择文件
+            true, // chooseFolders -选择目录
+            false, // chooseJars - 选择JAR文件
+            false, // chooseJarsAsFiles - 将JAR作为文件选择
+            false, // chooseJarContents - 选择JAR内容
+            true  // chooseMultiple - 选择多个文件
         ).withTitle(message("oss.browse.file.chooser.title")) // 可选：添加标题
             .withDescription(message("oss.browse.file.chooser.desc")) // 可选：添加描述
-        val file = FileChooser.chooseFile(
+        val files = FileChooser.chooseFiles(
             fileChooserDescriptor,
             project,
             null
-        ) ?: return
-
+        )
+        if (files.isEmpty()) {
+            return
+        }
         scope.launch {
-            project.withProgressBackground(message("oss.browse.upload.progress", file.name)) { indicator ->
-                indicator.text = message("oss.browse.upload.progress", file.name)
-                service.uploadFile(file, nodeData.objectPrefix + file.name) {
-                    SwingUtilities.invokeLater {
-                        refreshNode(parentNode)
+            uploadFiles(files, nodeData)
+        }
+    }
+
+    private suspend fun uploadFiles(files: Array<VirtualFile>, nodeData: TreeNodeData) {
+        val title: String
+        if (files.size == 1 && files.first().isFile) {
+            val file = files.first()
+            title = message("oss.browse.upload.progress", file.name)
+
+        } else {
+            title = message("upload.progress")
+        }
+        project.withProgressBackground(title) { indicator ->
+            service.uploadFile(files, nodeData.objectPrefix, indicator)
+                .onSuccess {
+                    if (it > 0) {
+                        project.notification(
+                            message("upload.success_title"),
+                            message("upload.success_title.multi", it)
+                        )
                     }
                 }.onDefFailure {}
-            }
         }
     }
 
@@ -416,7 +534,7 @@ class OSSBrowserPanel(
 
     private fun refreshNode(node: DefaultMutableTreeNode?) {
         if (node == null) return
-        if (tree.isExpanded(TreePath(node.path))) loadNode(node)
+        loadNode(node)
     }
 
     private fun downloadFile() {
@@ -438,16 +556,27 @@ class OSSBrowserPanel(
         val targetFile = result.file.toPath()
         scope.launch {
             project.withProgressBackground(message("oss.browse.download")) {
-                service.downloadFile(targetFile, data).onFailure {
-                    if (it.isCancel) {
-                        return@withProgressBackground
+                service.downloadFile(targetFile, data)
+                    .onSuccess {
+                        val openPath = targetFile.parent.absolutePathString()
+                        project.notification(
+                            message("oss.browse.download.title"),
+                            message("oss.browse.download.success", data.displayName),
+                            message("open.folder") to {
+                                File(openPath).revealSmart()
+                            }
+                        )
                     }
-                    LOG.warn(it)
-                    project.notification(
-                        message("error"),
-                        message("oss.browse.download.failed", it.message ?: ""),
-                    )
-                }
+                    .onFailure {
+                        if (it.isCancel) {
+                            return@withProgressBackground
+                        }
+                        LOG.warn(it)
+                        project.notification(
+                            message("error"),
+                            message("oss.browse.download.failed", it.message ?: ""),
+                        )
+                    }
             }
         }
     }
@@ -477,8 +606,15 @@ class OSSBrowserPanel(
 
         scope.launch {
             project.withProgressBackground(message("oss.browse.download")) { indicator ->
-                runCatching {
-                    service.downloadSelectedNodes(nodes, folder, indicator)
+                service.downloadSelectedNodes(nodes, folder, indicator).onSuccess {
+                    val path = folder.path
+                    project.notification(
+                        message("oss.browse.download.title"),
+                        message("oss.browse.download.success.multi", it),
+                        message("open.folder") to {
+                            File(path).revealSmart()
+                        }
+                    )
                 }.onFailure {
                     if (it.isCancel) return@withProgressBackground
                     LOG.warn(it)
@@ -516,7 +652,9 @@ class OSSBrowserPanel(
     private inline fun <T> Result<T>.onDefFailure(action: (exception: Throwable) -> Unit): Result<T> {
         exceptionOrNull()?.let {
             if (it.isCancel) return@let
-            LOG.warn(it)
+            if (it !is CustomError) {
+                LOG.warn(it)
+            }
             project.notification(
                 message("error"),
                 it.message ?: "",
@@ -526,10 +664,6 @@ class OSSBrowserPanel(
         }
         return this
     }
-
-
-    private val Throwable.isCancel get() = this is CancellationException || this is ProcessCanceledException
-
 
     override fun dispose() {
         service.dispose()

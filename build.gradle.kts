@@ -2,11 +2,10 @@ plugins {
     id("java")
     id("org.jetbrains.kotlin.jvm") version "1.9.25"
     id("org.jetbrains.intellij") version "1.17.4"
-    id("com.github.johnrengelman.shadow") version "8.1.1"
 }
 
 group = "space.zhangjing"
-version = "1.0.1"
+version = "1.0.2"
 
 repositories {
     mavenCentral()

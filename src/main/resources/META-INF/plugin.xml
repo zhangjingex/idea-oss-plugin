@@ -44,8 +44,8 @@
 
     <change-notes><![CDATA[
     <ul>
-      <li><b>English:</b> Added object property viewing and batch download features. Fixed several bugs and improved plugin stability.</li>
-      <li><b>中文:</b> 新增对象属性查看和批量下载功能，修复若干 Bug，提升插件稳定性。</li>
+    <li><b>English:</b> Added batch upload feature. Fixed several bugs and improved plugin stability.</li>
+    <li><b>中文:</b> 新增批量上传功能，修复若干 Bug，提升插件稳定性。</li>
     </ul>
     ]]></change-notes>
 

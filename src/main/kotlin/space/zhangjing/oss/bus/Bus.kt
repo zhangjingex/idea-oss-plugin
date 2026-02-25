@@ -11,6 +11,11 @@ val CREDENTIAL_CHANGED_TOPIC: Topic<CredentialChangedListener> =
         CredentialChangedListener::class.java
     )
 
+val OSS_UPLOADED_TOPIC: Topic<UploadedListener> =
+    Topic.create(
+        "OSS uploaded",
+        UploadedListener::class.java
+    )
 
 fun <L : Any, T : Topic<L>> T.subscribe(
     parentDisposable: Disposable,
@@ -21,3 +26,4 @@ fun <L : Any, T : Topic<L>> T.subscribe(
         .connect(parentDisposable)
         .subscribe(this, handler)
 }
+

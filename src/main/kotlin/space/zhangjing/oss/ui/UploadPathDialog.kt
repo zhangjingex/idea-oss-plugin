@@ -44,10 +44,26 @@ class UploadPathDialog private constructor(
         settings: ProjectSettings.State,
         credentials: List<Credential>,
         lastPath: String?,
+        virtualFiles: Array<VirtualFile>
+    ) : this(project, settings, credentials, lastPath, virtualFiles.name, {
+        it.variables(project, virtualFiles[0]) ?: it
+    })
+
+
+    constructor(
+        project: Project,
+        settings: ProjectSettings.State,
+        credentials: List<Credential>,
+        lastPath: String?,
         file: File
     ) : this(project, settings, credentials, lastPath, file.name, {
         it.variables(project, file) ?: it
     })
+
+    companion object {
+        val Array<VirtualFile>.name: String
+            get() = joinToString { it.name }
+    }
 
 
     private val textField = TemplateTextField(tooltipProvider)

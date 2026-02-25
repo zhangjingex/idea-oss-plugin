@@ -17,8 +17,7 @@ class ProjectSettings : PersistentStateComponent<ProjectSettings.State> {
     data class State(
         var selectedCredentialId: String = "",
         var uploadPath: String = "",
-        var validityPeriod: Int = 600,
-        var useDialog: Boolean = false
+        var validityPeriod: Int = 600
     )
 
     private var state = State()

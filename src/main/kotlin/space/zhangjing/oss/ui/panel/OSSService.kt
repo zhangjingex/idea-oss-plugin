@@ -1,11 +1,14 @@
 package space.zhangjing.oss.ui.panel
 
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
+import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.openapi.vfs.isFile
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
@@ -15,10 +18,10 @@ import software.amazon.awssdk.core.exception.SdkClientException
 import software.amazon.awssdk.core.sync.RequestBody
 import software.amazon.awssdk.services.s3.S3Client
 import software.amazon.awssdk.services.s3.model.*
+import space.zhangjing.oss.bus.OSS_UPLOADED_TOPIC
 import space.zhangjing.oss.entity.Credential
 import space.zhangjing.oss.utils.*
 import space.zhangjing.oss.utils.PluginBundle.message
-import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
@@ -27,7 +30,6 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import javax.swing.SwingUtilities
 import javax.swing.tree.DefaultMutableTreeNode
-import kotlin.io.path.absolutePathString
 
 
 class OSSService(
@@ -37,9 +39,7 @@ class OSSService(
 
     companion object {
         private val LOG = Logger.getInstance(OSSService::class.java)
-        private const val DANGEROUS_DELETE_THRESHOLD = 50
     }
-
 
     private var s3Client: S3Client? = null
 
@@ -49,13 +49,13 @@ class OSSService(
             LOG.debug {
                 "withContext"
             }
-            val client = s3Client ?: OSSUploader.buildS3Client(credential).also { s3Client = it }
+            val client = s3Client ?: OSSUtils.buildS3Client(credential).also { s3Client = it }
             try {
                 action(client)
             } catch (e: SdkClientException) {
                 LOG.warn("S3Client error, reconnecting", e)
                 closeS3()
-                val newClient = OSSUploader.buildS3Client(credential).also { s3Client = it }
+                val newClient = OSSUtils.buildS3Client(credential).also { s3Client = it }
                 action(newClient)
             }
         }
@@ -67,7 +67,11 @@ class OSSService(
     }
 
 
-    suspend fun uploadFile(file: VirtualFile, objectName: String, action: () -> Unit) = withS3Client { client ->
+    suspend fun uploadFile(
+        file: VirtualFile,
+        objectName: String,
+        action: ((objectKey: String) -> Unit)
+    ) = withS3Client { client ->
         val finalKey = if (client.objectExists(credential.bucketName, objectName)) {
             val choice = runInEdtAndWait {
                 Messages.showDialog(
@@ -93,28 +97,114 @@ class OSSService(
         } else {
             objectName
         }
-        if (file.fileSystem.protocol == "file") {
-            // 本地真实文件
-            client.putObject(
-                PutObjectRequest.builder()
-                    .bucket(credential.bucketName)
-                    .key(finalKey)
-                    .build(),
-                RequestBody.fromFile(file.toIoFile())
-            )
-        } else {
-            file.inputStream.use { input ->
-                client.putObject(
-                    PutObjectRequest.builder()
-                        .bucket(credential.bucketName)
-                        .key(finalKey)
-                        .build(),
-                    RequestBody.fromInputStream(input, file.length)
-                )
+        client.putObject(
+            PutObjectRequest.builder()
+                .bucket(credential.bucketName)
+                .key(finalKey)
+                .build(),
+            RequestBody.fromFile(file.toIoFile())
+        )
+        action(finalKey)
+    }
+
+
+    suspend fun uploadFile(
+        files: Array<VirtualFile>,
+        prefix: String,
+        indicator: ProgressIndicator,
+        action: ((total: Int, done: Int, objectKey: String) -> Unit)? = null
+    ) = withS3Client { client ->
+        val objectPrefix = prefix.trim('/')
+        fun objectKey(basePath: String = ""): String =
+            listOfNotNull(
+                objectPrefix.trim('/').takeIf { it.isNotBlank() },
+                basePath.trim('/').takeIf { it.isNotBlank() }
+            ).joinToString("/")
+
+        val allFiles = files.flatMap {
+            if (it.isFile) {
+                listOf(UploadFile(objectKey(it.name), it))
+            } else {
+                val result = mutableListOf<UploadFile>()
+                VfsUtilCore.iterateChildrenRecursively(it, null) { child ->
+                    if (child.isFile) {
+                        val relativePath = "${it.name}/${VfsUtilCore.getRelativePath(child, it)}"
+                        result.add(UploadFile(objectKey(relativePath), child))
+                    }
+                    true
+                }
+                result
             }
         }
-        action()
+        val completed = AtomicInteger(0)
+        if (allFiles.size == 1) {
+            val file = files[0]
+            val key = if (objectPrefix.isBlank())
+                file.name
+            else
+                "$objectPrefix/${file.name}"
+            uploadFile(files[0], key) {
+                completed.incrementAndGet()
+                ApplicationManager.getApplication().messageBus.syncPublisher(OSS_UPLOADED_TOPIC)
+                    .uploaded(credential, prefix)
+                action?.invoke(1, 1, key)
+            }
+            return@withS3Client completed.get()
+        }
+        var conflictStrategy: ConflictStrategy? = null
+        val uploadFiles = mutableSetOf<UploadFile>()
+        suspend fun isExists(objectKey: String): Boolean {
+            return client.objectExists(credential.bucketName, objectKey) || uploadFiles.any { it.key == objectKey }
+        }
+        for (upload in allFiles) {
+            var objectKey = upload.key
+            while (isExists(objectKey)) {
+                val choice = conflictStrategy ?: runInEdtAndWait {
+                    project.askConflictStrategy().apply {
+                        conflictStrategy = this
+                    }
+                } ?: return@withS3Client completed.get()
+                objectKey = when (choice) {
+                    ConflictStrategy.OVERWRITE -> {
+                        uploadFiles.removeIf {
+                            it.key == objectKey
+                        }
+                        objectKey
+                    }
+
+                    ConflictStrategy.RENAME -> client.generateUniqueKey(credential.bucketName, objectKey)
+                    ConflictStrategy.SKIP -> continue
+                }
+            }
+            uploadFiles.add(UploadFile(objectKey, upload.file))
+        }
+        val total = uploadFiles.size
+        if (total == 0) {
+            throw CustomError.message(message("upload.error.emptyFile"))
+        }
+        val semaphore = Semaphore(4)
+        coroutineScope {
+            uploadFiles.map {
+                async(Dispatchers.IO) {
+                    semaphore.withPermit {
+                        indicator.checkCanceled()
+                        uploadFile(it.file, it.key) { key ->
+                            val done = completed.incrementAndGet()
+                            indicator.fraction = done.toDouble() / total
+                            action?.invoke(total, done, key)
+                        }
+                    }
+                }
+            }.awaitAll()
+        }
+        val count = completed.get()
+        if (count > 0) {
+            ApplicationManager.getApplication().messageBus.syncPublisher(OSS_UPLOADED_TOPIC)
+                .uploaded(credential, prefix)
+        }
+        return@withS3Client count
     }
+
 
     suspend fun deleteObjects(nodes: List<DefaultMutableTreeNode>, indicator: ProgressIndicator): Result<Int> {
         val objectsToDelete = mutableListOf<String>()
@@ -145,7 +235,7 @@ class OSSService(
                 }
             }
             totalCount = objectsToDelete.size
-            isDangerous = totalCount > DANGEROUS_DELETE_THRESHOLD
+            isDangerous = totalCount >= credential.requiredDeleteThreshold
             if (isDangerous) {
                 SwingUtilities.invokeAndWait {
                     if (Messages.showYesNoDialog(
@@ -201,14 +291,6 @@ class OSSService(
             { it.bucket(credential.bucketName).key(data.key) },
             finalPath
         )
-        val openPath = targetFile.parent.absolutePathString()
-        project.notification(
-            message("oss.browse.download.title"),
-            message("oss.browse.download.success", data.displayName),
-            message("open.folder") to {
-                File(openPath).revealSmart()
-            }
-        )
     }
 
 
@@ -216,7 +298,8 @@ class OSSService(
         nodes: List<TreeNodeData>,
         folder: VirtualFile,
         indicator: ProgressIndicator
-    ) {
+    ) = runCatching {
+        val completed = AtomicInteger(0)
         val targetDir = Paths.get(folder.path)
         val strategyRef = AtomicReference<ConflictStrategy?>(null)
         val strategyMutex = Mutex()
@@ -300,11 +383,10 @@ class OSSService(
         }.getOrThrow()
 
         if (resultFiles.isNullOrEmpty()) {
-            return
+            return@runCatching completed.get()
         }
         withS3Client { client ->
             val total = resultFiles.size
-            val completed = AtomicInteger(0)
             val semaphore = Semaphore(4) // 最大并发数
             coroutineScope {
                 resultFiles.map { file ->
@@ -331,15 +413,8 @@ class OSSService(
                     }
                 }.awaitAll()
             }
-            val path = folder.path
-            project.notification(
-                message("oss.browse.download.title"),
-                message("oss.browse.download.success.multi", total),
-                message("open.folder") to {
-                    File(path).revealSmart()
-                }
-            )
         }
+        return@runCatching completed.get()
     }
 
 
@@ -353,7 +428,7 @@ class OSSService(
     }
 
 
-    suspend fun listObjects(prefix: String) =
+    suspend fun listObjects(prefix: String, loadFile: Boolean = true) =
         withS3Client { client ->
             LOG.debug {
                 "listObjects: $prefix"
@@ -361,9 +436,13 @@ class OSSService(
             val result = client.listObjects(credential.bucketName, prefix)
             val folders =
                 result.commonPrefixes().map { TreeNodeData.Folder(extractName(it.prefix()), it.prefix()) }
-            val files = result.contents().filterNot { it.key().endsWith("/") }
-                .map { TreeNodeData.File(it.key().substringAfterLast("/"), it.key()) }
-            folders + files
+            if (loadFile) {
+                val files = result.contents().filterNot { it.key().endsWith("/") }
+                    .map { TreeNodeData.File(it.key().substringAfterLast("/"), it.key()) }
+                folders + files
+            } else {
+                folders
+            }
         }
 
     private fun extractName(prefix: String): String = prefix.removeSuffix("/").substringAfterLast("/")

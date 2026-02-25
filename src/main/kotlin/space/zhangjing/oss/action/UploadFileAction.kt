@@ -2,20 +2,31 @@ package space.zhangjing.oss.action
 
 
 import com.intellij.ide.projectView.impl.nodes.PsiFileNode
+import com.intellij.notification.NotificationType
 import com.intellij.openapi.actionSystem.*
+import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.ui.Messages
+import com.intellij.openapi.util.use
 import com.intellij.openapi.vfs.VirtualFile
-import com.intellij.openapi.vfs.isFile
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
+import kotlinx.coroutines.launch
 import space.zhangjing.oss.entity.Credential
+import space.zhangjing.oss.service.ScopeService
 import space.zhangjing.oss.settings.CredentialSettings
 import space.zhangjing.oss.settings.ProjectSettings
 import space.zhangjing.oss.ui.UploadPathDialog
+import space.zhangjing.oss.ui.panel.OSSService
+import space.zhangjing.oss.ui.panel.showUrlNotification
+import space.zhangjing.oss.ui.panel.withProgressBackground
+import space.zhangjing.oss.utils.CustomError
+import space.zhangjing.oss.utils.OSSUtils.createUrl
 import space.zhangjing.oss.utils.PluginBundle.message
+import space.zhangjing.oss.utils.VariablesUtils.formatVariables
 import space.zhangjing.oss.utils.debug
-import space.zhangjing.oss.utils.upload
+import space.zhangjing.oss.utils.isCancel
+import space.zhangjing.oss.utils.notification
 
 class UploadFileAction : AnAction() {
 
@@ -35,7 +46,7 @@ class UploadFileAction : AnAction() {
             false
         } else {
             val virtualFile = getSelectedFile(e)
-            virtualFile != null && virtualFile.isFile
+            virtualFile != null
         }
         presentation.isEnabled = enabled
         presentation.isVisible = enabled
@@ -142,13 +153,9 @@ class UploadFileAction : AnAction() {
 
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
-        val virtualFile = e.getData(CommonDataKeys.VIRTUAL_FILE)
-        if (virtualFile == null) {
+        val virtualFiles = e.getData(CommonDataKeys.VIRTUAL_FILE_ARRAY)
+        if (virtualFiles.isNullOrEmpty()) {
             Messages.showErrorDialog(project, message("file.no.select"), message("plugin.title"))
-            return
-        }
-        if (!virtualFile.exists()) {
-            Messages.showErrorDialog(project, message("file.empty"), message("plugin.title"))
             return
         }
         val settings = ProjectSettings.getInstance(project)
@@ -159,13 +166,43 @@ class UploadFileAction : AnAction() {
             state,
             credentials,
             lastPath = state.uploadPath,
-            virtualFile
+            virtualFiles
         )
         if (!dialog.showAndGet()) {
             return
         }
         val credential = dialog.credential
         val ossPath = dialog.ossPath
-        virtualFile.upload(project, credential, ossPath, state.useDialog, state.validityPeriod)
+        project.service<ScopeService>().scope.launch {
+            project.withProgressBackground(message("upload.progress")) { indicator ->
+                OSSService(project, credential).use {
+                    it.uploadFile(virtualFiles, ossPath.formatVariables(project, virtualFiles[0]), indicator,
+                        { total, done, key ->
+                            if (total == 1) {
+                                val url = key.createUrl(
+                                    credential,
+                                    state.validityPeriod
+                                )
+                                url.showUrlNotification(project)
+                            } else if (total == done) {
+                                project.notification(
+                                    message("upload.success_title"),
+                                    message("upload.success_title.multi", total)
+                                )
+                            }
+                        }).onFailure { error ->
+                        if (error.isCancel) return@onFailure
+                        if (error !is CustomError) {
+                            LOG.warn(error)
+                        }
+                        project.notification(
+                            message("error"),
+                            error.message ?: "",
+                            NotificationType.ERROR
+                        )
+                    }
+                }
+            }
+        }
     }
 }

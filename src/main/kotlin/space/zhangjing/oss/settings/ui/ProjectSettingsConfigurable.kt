@@ -6,6 +6,7 @@ import com.intellij.openapi.options.ConfigurationException
 import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
+import com.intellij.ui.ContextHelpLabel
 import com.intellij.ui.components.JBTextField
 import com.intellij.util.ui.JBUI
 import space.zhangjing.oss.bus.CREDENTIAL_CHANGED_TOPIC
@@ -18,7 +19,6 @@ import space.zhangjing.oss.ui.TemplateTextField
 import space.zhangjing.oss.utils.PluginBundle.message
 import space.zhangjing.oss.utils.VariablesUtils.variables
 import space.zhangjing.oss.utils.createS3SelectButton
-import java.awt.FlowLayout
 import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
 import javax.swing.*
@@ -36,10 +36,7 @@ class ProjectSettingsConfigurable(
     private val pathField = TemplateTextField({ it.variables(project, null) ?: it }
     )
     private val validityPeriodField = JBTextField()
-
-    private val useDialogRadio = JRadioButton(message("use.dialog"))
-    private val useNotificationRadio = JRadioButton(message("use.notification"))
-    private val notificationGroup = ButtonGroup()
+    private val validityHelp = ContextHelpLabel.create(message("settings.s3.expiration.help"))
 
     private lateinit var panel: JPanel
 
@@ -74,12 +71,6 @@ class ProjectSettingsConfigurable(
         pathField.text = state.uploadPath
         validityPeriodField.text = state.validityPeriod.toString()
 
-        // ===== 单选按钮 =====
-        notificationGroup.add(useDialogRadio)
-        notificationGroup.add(useNotificationRadio)
-        useDialogRadio.isSelected = state.useDialog
-        useNotificationRadio.isSelected = !state.useDialog
-
         val credential = {
             requireCredential()
         }
@@ -101,8 +92,7 @@ class ProjectSettingsConfigurable(
         // ===== 选择路径按钮 =====
         val choosePathButton = project.createS3SelectButton(
             {
-                val credential = requireCredential()
-                message("oss.browse.select.title", credential.name)
+                message("oss.browse.select.title", requireCredential().name)
             }, credential, validityPeriod,
             { select -> pathField.text = select },
             onError
@@ -159,12 +149,7 @@ class ProjectSettingsConfigurable(
         var row = 0
         addRow(message("credential"), credentialCombo, row++, configureCredentialButton)
         addRow(message("upload.path"), pathField, row++, choosePathButton)
-        addRow(message("expires"), validityPeriodField, row++)
-        val radioPanel = JPanel(FlowLayout(FlowLayout.LEFT, 5, 0))
-        radioPanel.add(useDialogRadio)
-        radioPanel.add(useNotificationRadio)
-        addRow(message("upload.success"), radioPanel, row++)
-
+        addRow(message("expires"), validityPeriodField, row++, validityHelp)
         return panel
     }
 
@@ -185,8 +170,7 @@ class ProjectSettingsConfigurable(
 
         return selected?.id != s.selectedCredentialId ||
                 pathField.text != s.uploadPath ||
-                validityPeriodField.text.toIntOrNull() != s.validityPeriod ||
-                useDialogRadio.isSelected != s.useDialog
+                validityPeriodField.text.toIntOrNull() != s.validityPeriod
     }
 
     override fun apply() {
@@ -200,14 +184,15 @@ class ProjectSettingsConfigurable(
         val validity = validityText.toIntOrNull()
             ?: throw ConfigurationException(message("expires.not.number"))
 
-        if (validity < 1 || validity > 86400) {
-            throw ConfigurationException(message("expires.out.of.range"))
+        val min = 1
+        val max = 86400
+        if (validity !in min..max) {
+            throw ConfigurationException(message("expires.out.of.range", min, max))
         }
         val s = projectSettings.state
         s.selectedCredentialId = credential.id
         s.uploadPath = pathField.text
         s.validityPeriod = validity
-        s.useDialog = useDialogRadio.isSelected
     }
 
     override fun reset() {
@@ -218,8 +203,6 @@ class ProjectSettingsConfigurable(
 
         pathField.text = s.uploadPath
         validityPeriodField.text = s.validityPeriod.toString()
-        useDialogRadio.isSelected = s.useDialog
-        useNotificationRadio.isSelected = !s.useDialog
     }
 
     override fun disposeUIResources() {

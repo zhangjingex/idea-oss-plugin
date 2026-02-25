@@ -5,6 +5,7 @@ import com.intellij.notification.NotificationAction
 import com.intellij.notification.NotificationType
 import com.intellij.notification.Notifications
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.util.NlsContexts
@@ -17,6 +18,7 @@ import space.zhangjing.oss.utils.PluginBundle.message
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
 import javax.swing.JButton
+import kotlin.coroutines.cancellation.CancellationException
 
 
 fun String.ensureEndsWithSlash(): String {
@@ -116,3 +118,5 @@ fun Project.notification(
     }
     Notifications.Bus.notify(notification, this)
 }
+
+val Throwable.isCancel get() = this is CancellationException || this is ProcessCanceledException

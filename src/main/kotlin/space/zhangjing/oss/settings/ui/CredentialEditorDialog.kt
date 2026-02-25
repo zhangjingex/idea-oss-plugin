@@ -4,9 +4,8 @@ import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task
-import com.intellij.openapi.ui.ComboBox
-import com.intellij.openapi.ui.DialogWrapper
-import com.intellij.openapi.ui.Messages
+import com.intellij.openapi.ui.*
+import com.intellij.ui.ContextHelpLabel
 import com.intellij.ui.DocumentAdapter
 import com.intellij.ui.components.JBPasswordField
 import com.intellij.ui.components.JBTextField
@@ -15,10 +14,11 @@ import software.amazon.awssdk.regions.Region
 import software.amazon.awssdk.services.s3.model.HeadBucketRequest
 import software.amazon.awssdk.services.s3.model.S3Exception
 import space.zhangjing.oss.entity.Credential
+import space.zhangjing.oss.settings.DigitsOnlyFilter
 import space.zhangjing.oss.utils.CredentialSecretStore
-import space.zhangjing.oss.utils.OSSUploader
-import space.zhangjing.oss.utils.OSSUploader.region
-import space.zhangjing.oss.utils.OSSUploader.scheme
+import space.zhangjing.oss.utils.OSSUtils
+import space.zhangjing.oss.utils.OSSUtils.region
+import space.zhangjing.oss.utils.OSSUtils.scheme
 import space.zhangjing.oss.utils.PluginBundle.message
 import java.awt.CardLayout
 import java.awt.Cursor
@@ -27,8 +27,10 @@ import java.awt.GridBagLayout
 import java.awt.event.ActionEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
+import java.util.function.Supplier
 import javax.swing.*
 import javax.swing.event.DocumentEvent
+import javax.swing.text.AbstractDocument
 
 class CredentialEditorDialog(
     private val credential: Credential
@@ -41,6 +43,9 @@ class CredentialEditorDialog(
         private const val SECRET_EDIT = "edit"
         private const val AK_MASKED = "masked"
         private const val AK_PLAIN = "plain"
+
+        private const val DELETE_THRESHOLD_MIN = 1
+        private const val DELETE_THRESHOLD_MAX = 1000
     }
 
 
@@ -51,11 +56,23 @@ class CredentialEditorDialog(
     ).apply {
         isEditable = true
         selectedItem = credential.region
-        toolTipText = message("credential.filed.region.tip")
     }
 
+    private val regionHelp = ContextHelpLabel.create(message("credential.filed.region.tip"))
+
     private val bucketField = JBTextField(credential.bucketName)
+
     private val cdnField = JBTextField(credential.cdnUrl)
+    private val cdnHelp = ContextHelpLabel.create(message("settings.s3.cdn.help"))
+
+    private val deleteThresholdField = JBTextField(credential.deleteThreshold?.toString())
+    private val deleteThresholdHelp = ContextHelpLabel.create(
+        message(
+            "oss.settings.delete.bulk.threshold.desc",
+            Credential.DEF_DELETE_THRESHOLD, DELETE_THRESHOLD_MIN, DELETE_THRESHOLD_MAX
+        )
+    )
+
 
     /** ===== AccessKeyId（可显示/隐藏） ===== */
     private val akPlainField = JBTextField(credential.accessKeyId)
@@ -77,6 +94,7 @@ class CredentialEditorDialog(
     init {
         title = message("credential")
         init()
+        initValidation()
     }
 
     override fun createCenterPanel(): JComponent {
@@ -183,14 +201,29 @@ class CredentialEditorDialog(
             }
         })
 
+        // 只允许数字
+        (deleteThresholdField.document as? AbstractDocument)
+            ?.documentFilter = DigitsOnlyFilter()
+
+        ComponentValidator(disposable)
+            .withValidator(Supplier<ValidationInfo?> { doValidate() })
+            .installOn(deleteThresholdField)
+
+        deleteThresholdField.document.addDocumentListener(object : DocumentAdapter() {
+            override fun textChanged(e: DocumentEvent) {
+                initValidation()
+            }
+        })
+
         /** ===== Rows ===== */
         row(message("credential.filed.name"), nameField, null, 0)
         row(message("credential.filed.endpoint"), endpointField, null, 1)
-        row(message("credential.filed.region"), regionCombo, null, 2)
+        row(message("credential.filed.region"), regionCombo, regionHelp, 2)
         row(message("credential.filed.access.id"), akPanel, akShowCheckBox, 3)
         row(message("credential.filed.access.secret"), secretPanel, savePwd, 4)
         row(message("credential.filed.bucket"), bucketField, null, 5)
-        row(message("credential.filed.cdn.url"), cdnField, null, 6)
+        row(message("credential.filed.cdn.url"), cdnField, cdnHelp, 6)
+        row(message("oss.settings.delete.bulk.threshold"), deleteThresholdField, deleteThresholdHelp, 7)
 
         return panel
     }
@@ -203,6 +236,17 @@ class CredentialEditorDialog(
         skField.requestFocusInWindow()
     }
 
+    override fun doValidate(): ValidationInfo? {
+        val deleteThreshold = deleteThresholdField.text.toIntOrNull()
+        if (deleteThreshold != null && deleteThreshold !in DELETE_THRESHOLD_MIN..DELETE_THRESHOLD_MAX) {
+            return ValidationInfo(
+                message("validation.number.range", DELETE_THRESHOLD_MIN, DELETE_THRESHOLD_MAX),
+                deleteThresholdField
+            )
+        }
+        return super.doValidate()
+    }
+
     override fun doOKAction() {
         credential.name = nameField.text
         credential.endpoint = endpointField.text.scheme()
@@ -211,6 +255,7 @@ class CredentialEditorDialog(
         credential.bucketName = bucketField.text
         credential.cdnUrl = cdnField.text
         credential.region = regionCombo.editor.item?.toString()?.trim().orEmpty()
+        credential.deleteThreshold = deleteThresholdField.text.toIntOrNull()
         val newSecret = String(skField.password)
         if (newSecret.isNotBlank() || !savePwd.isSelected) {
             CredentialSecretStore.removeSecretFromDisk(credential.id)
@@ -265,7 +310,7 @@ class CredentialEditorDialog(
             override fun run(indicator: ProgressIndicator) {
                 indicator.isIndeterminate = true
                 try {
-                    OSSUploader.buildS3Client(endpoint, accessKeyId, secret, region.region()).use {
+                    OSSUtils.buildS3Client(endpoint, accessKeyId, secret, region.region()).use {
                         it.headBucket(
                             HeadBucketRequest.builder()
                                 .bucket(bucket)
