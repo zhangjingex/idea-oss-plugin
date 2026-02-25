@@ -212,7 +212,7 @@ class CredentialEditorDialog(
         credential.cdnUrl = cdnField.text
         credential.region = regionCombo.editor.item?.toString()?.trim().orEmpty()
         val newSecret = String(skField.password)
-        if (newSecret.isBlank() || !savePwd.isSelected) {
+        if (newSecret.isNotBlank() || !savePwd.isSelected) {
             CredentialSecretStore.removeSecretFromDisk(credential.id)
         }
         if (newSecret.isNotBlank()) {

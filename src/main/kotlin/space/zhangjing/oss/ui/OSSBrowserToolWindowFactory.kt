@@ -18,12 +18,15 @@ import space.zhangjing.oss.bus.CredentialChangedListener
 import space.zhangjing.oss.bus.subscribe
 import space.zhangjing.oss.entity.Credential
 import space.zhangjing.oss.settings.ui.CredentialConfigurable
+import space.zhangjing.oss.ui.panel.OSSBrowserPanel
 import space.zhangjing.oss.utils.PluginBundle.message
 import space.zhangjing.oss.utils.config
 import space.zhangjing.oss.utils.refreshCredentials
 import java.awt.BorderLayout
 import java.awt.FlowLayout
 import java.awt.Font
+import javax.swing.Box
+import javax.swing.BoxLayout
 import javax.swing.JButton
 import javax.swing.JPanel
 
@@ -98,7 +101,27 @@ class OSSBrowserToolWindowFactory : ToolWindowFactory, DumbAware {
 
         comboBox.refreshCredentials()
         comboBox.selectedItem = defaultCredential
-        mainPanel.add(comboBox, BorderLayout.NORTH)
+        val credentialPanel = JPanel()
+        credentialPanel.layout = BoxLayout(credentialPanel, BoxLayout.X_AXIS)
+        credentialPanel.add(comboBox)
+        credentialPanel.add(Box.createRigidArea(java.awt.Dimension(8, 0)))
+        // 设置按钮
+        val settingsButton = JButton(message("settings"))
+        val buttonSize = java.awt.Dimension(60, settingsButton.preferredSize.height)
+        settingsButton.preferredSize = buttonSize
+        settingsButton.minimumSize = buttonSize
+        settingsButton.maximumSize = buttonSize
+        settingsButton.addActionListener {
+//            ShowSettingsUtil.getInstance()
+//                .showSettingsDialog(project, CredentialConfigurable::class.java)
+            ShowSettingsUtil.getInstance()
+                .editConfigurable(project, CredentialConfigurable())
+        }
+        credentialPanel.add(settingsButton)
+        credentialPanel.add(Box.createRigidArea(java.awt.Dimension(4, 0)))
+
+        credentialPanel.alignmentX = java.awt.Component.LEFT_ALIGNMENT
+        mainPanel.add(credentialPanel, BorderLayout.NORTH)
 
         fun createNoCredentialPanel(): JPanel =
             JBPanel<JBPanel<*>>(BorderLayout()).apply {

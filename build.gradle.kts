@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "space.zhangjing"
-version = "1.0.0"
+version = "1.0.1"
 
 repositories {
     mavenCentral()
@@ -27,9 +27,14 @@ intellij {
 }
 
 dependencies {
-    implementation("software.amazon.awssdk:s3:2.40.8")
-    implementation("net.dongliu:apk-parser:2.6.10")
+    implementation("software.amazon.awssdk:s3:2.40.8") {
+        exclude(group = "org.slf4j")
+    }
+    implementation("net.dongliu:apk-parser:2.6.10") {
+        exclude(group = "org.slf4j")
+    }
 }
+
 
 
 tasks {

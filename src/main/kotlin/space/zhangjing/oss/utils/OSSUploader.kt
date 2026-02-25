@@ -43,6 +43,9 @@ object OSSUploader {
     ): S3Client {
         return S3Client.builder()
             .endpointOverride(URI.create(endpoint.scheme()))
+            .overrideConfiguration {
+                it.addExecutionInterceptor(DeleteObjectsMd5Interceptor())
+            }
             .credentialsProvider(
                 StaticCredentialsProvider.create(
                     AwsBasicCredentials.create(accessKeyId, accessKeySecret)

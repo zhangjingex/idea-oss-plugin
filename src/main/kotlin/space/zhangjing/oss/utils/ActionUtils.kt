@@ -1,111 +1,23 @@
 package space.zhangjing.oss.utils
 
-import com.intellij.ide.plugins.PluginManagerCore
 import com.intellij.notification.Notification
 import com.intellij.notification.NotificationAction
 import com.intellij.notification.NotificationType
 import com.intellij.notification.Notifications
 import com.intellij.openapi.diagnostic.Logger
-import com.intellij.openapi.extensions.PluginId
-import com.intellij.openapi.progress.ProgressIndicator
-import com.intellij.openapi.progress.ProgressManager
-import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
-import com.intellij.openapi.ui.Messages
-import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.openapi.util.NlsContexts
 import space.zhangjing.oss.entity.Credential
 import space.zhangjing.oss.entity.Credential.Companion.findById
 import space.zhangjing.oss.settings.CredentialSettings
 import space.zhangjing.oss.settings.ProjectSettings
 import space.zhangjing.oss.ui.OSSBrowserDialog
 import space.zhangjing.oss.utils.PluginBundle.message
-import space.zhangjing.oss.utils.VariablesUtils.formatVariables
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
-import java.io.File
 import javax.swing.JButton
 
-fun String.showUrlDialog(project: Project) {
-    val result = Messages.showDialog(
-        project,
-        this,
-        message("upload.success_title"),
-        arrayOf(message("copy.url"), message("close")),
-        0,
-        Messages.getInformationIcon()
-    )
-    if (result == 0) {
-        val clipboard = Toolkit.getDefaultToolkit().systemClipboard
-        clipboard.setContents(StringSelection(this), null)
-    }
-}
-
-fun String.showUrlNotification(project: Project) {
-    val notification = Notification(
-        "uploadUrl",
-        message("upload.success_title"),
-        this,
-        NotificationType.INFORMATION
-    )
-    // 添加“复制地址”按钮
-    notification.addAction(NotificationAction.createSimple(message("copy.url")) {
-        val clipboard = Toolkit.getDefaultToolkit().systemClipboard
-        clipboard.setContents(StringSelection(this@showUrlNotification), null)
-    })
-    Notifications.Bus.notify(notification, project)
-}
-
-
-fun VirtualFile.upload(
-    project: Project,
-    credential: Credential,
-    ossPath: String?,
-    useDialog: Boolean,
-    validityPeriod: Int = 600
-) {
-    File(path).upload(project, credential, ossPath?.formatVariables(project, this@upload), useDialog, validityPeriod)
-}
-
-fun File.upload(
-    project: Project,
-    credential: Credential,
-    ossPath: String?,
-    useDialog: Boolean,
-    validityPeriod: Int = 600
-) {
-    ProgressManager.getInstance().run(
-        object : Task.Backgroundable(project, message("upload.progress"), true) {
-
-            private lateinit var url: String
-
-            override fun run(indicator: ProgressIndicator) {
-                indicator.text = message("prepare.upload.ing")
-                indicator.isIndeterminate = true
-                url = OSSUploader.uploadFile(
-                    this@upload, credential,
-                    ossPath?.formatVariables(project, this@upload), validityPeriod
-                )
-            }
-
-            override fun onSuccess() {
-                if (useDialog) {
-                    url.showUrlDialog(project)
-                } else {
-                    url.showUrlNotification(project)
-                }
-            }
-
-            override fun onThrowable(error: Throwable) {
-                Messages.showErrorDialog(
-                    project,
-                    message("upload.failed", error.message ?: ""),
-                    message("plugin.title")
-                )
-            }
-        }
-    )
-}
 
 fun String.ensureEndsWithSlash(): String {
     return if (this.endsWith("/")) this else "$this/"
@@ -183,7 +95,24 @@ fun Project.config(): Pair<Int, Credential?> {
     return settings.validityPeriod to defaultCredential
 }
 
+fun Project.notification(
+    @NlsContexts.NotificationTitle title: String = message("plugin.title"),
+    @NlsContexts.NotificationContent content: String,
+    vararg actions: Pair<String, () -> Unit> = emptyArray()
+) = notification(title, content, NotificationType.INFORMATION, "oss.browser", *actions)
 
-fun isAndroidPluginAvailable(): Boolean {
-    return PluginManagerCore.isPluginInstalled(PluginId.getId("org.jetbrains.android"))
+fun Project.notification(
+    @NlsContexts.NotificationTitle title: String = message("plugin.title"),
+    @NlsContexts.NotificationContent content: String,
+    type: NotificationType = NotificationType.INFORMATION,
+    groupId: String = "oss.browser",
+    vararg actions: Pair<String, () -> Unit> = emptyArray()
+) {
+    val notification = Notification(groupId, title, content, type)
+    actions.forEach { (text, action) ->
+        notification.addAction(NotificationAction.createSimple(text) {
+            action()
+        })
+    }
+    Notifications.Bus.notify(notification, this)
 }

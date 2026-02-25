@@ -1,5 +1,6 @@
 package space.zhangjing.oss.ui
 
+import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.ui.DialogWrapper
@@ -104,7 +105,7 @@ class UploadPathDialog private constructor(
         settingsButton.minimumSize = buttonSize
         settingsButton.maximumSize = buttonSize
         settingsButton.addActionListener {
-            com.intellij.openapi.options.ShowSettingsUtil.getInstance()
+            ShowSettingsUtil.getInstance()
                 .showSettingsDialog(project, CredentialConfigurable::class.java)
         }
         credentialPanel.add(settingsButton)
