@@ -1,0 +1,15 @@
+<idea-plugin>
+
+    <actions resource-bundle="messages.MyActionsBundle">
+        <action id="oss.auto_build_upload"
+                class="space.zhangjing.oss.action.AutoBuildAndUploadAction">
+            <add-to-group group-id="BuildMenu" anchor="last"/>
+        </action>
+    </actions>
+
+
+    <extensions defaultExtensionNs="com.intellij">
+
+    </extensions>
+
+</idea-plugin>

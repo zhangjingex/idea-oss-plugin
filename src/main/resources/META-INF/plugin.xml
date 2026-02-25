@@ -1,0 +1,86 @@
+<!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
+<idea-plugin>
+    <!-- Unique identifier of the plugin. It should be FQN. It cannot be changed between the plugin versions. -->
+    <id>sp.zhangjing.idea-oss-plugin</id>
+    <resource-bundle>messages.PluginBundle</resource-bundle>
+    <!-- Public plugin name should be written in Title Case.
+         Guidelines: https://plugins.jetbrains.com/docs/marketplace/plugin-overview-page.html#plugin-name -->
+    <name>OSS Browser</name>
+
+    <!-- A displayed Vendor name or Organization ID displayed on the Plugins Page. -->
+    <vendor email="1910039677@qq.com" url="https://www.zhangjing.space">zhangjing</vendor>
+
+    <actions resource-bundle="messages.MyActionsBundle">
+        <action
+                id="oss.uploadFile"
+                class="space.zhangjing.oss.action.UploadFileAction">
+            <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+        </action>
+
+    </actions>
+
+
+    <!-- Description of the plugin displayed on the Plugin Page and IDE Plugin Manager.
+         Simple HTML elements (text formatting, paragraphs, and lists) can be added inside of <![CDATA[ ]]> tag.
+         Guidelines: https://plugins.jetbrains.com/docs/marketplace/plugin-overview-page.html#plugin-description -->
+
+    <description><![CDATA[
+    <b>English</b><br/>
+    OSS Browser is an IntelliJ IDEA plugin for managing object storage services
+    compatible with the AWS S3 protocol.
+    It is built on AWS SDK for Java v2 and interacts with storage services through standard AWS S3 APIs.
+    The plugin supports AWS S3 and other S3-compatible storage providers
+    (such as Alibaba Cloud OSS, MinIO, and similar services),
+    providing file browsing, uploading, downloading, and deleting directly within the IDE.<br/><br/>
+
+    <b>中文</b><br/>
+    OSS Browser 是一款用于管理兼容 AWS S3 协议的对象存储服务的 IntelliJ IDEA 插件。
+    插件基于 AWS SDK for Java v2实现，
+    通过标准的 AWS S3 API 与存储服务进行交互。
+    支持 AWS S3 以及其他兼容 S3 协议的对象存储服务（如阿里云 OSS、MinIO 等），
+    提供文件浏览、上传、下载和删除等功能，可直接在 IDE 中完成对象存储资源管理。
+    ]]></description>
+
+    <change-notes><![CDATA[
+    <ul>
+    <li>Initial release.</li>
+    </ul>
+    ]]></change-notes>
+
+
+    <!-- Product and plugin compatibility requirements.
+         Read more: https://plugins.jetbrains.com/docs/intellij/plugin-compatibility.html -->
+    <depends>com.intellij.modules.platform</depends>
+    <depends optional="true" config-file="android.xml">org.jetbrains.android</depends>
+
+    <!-- Extension points defined by the plugin.
+         Read more: https://plugins.jetbrains.com/docs/intellij/plugin-extension-points.html -->
+    <extensions defaultExtensionNs="com.intellij">
+
+        <projectConfigurable
+                id="oss.root"
+                displayName="OSS Browser"
+                instance="space.zhangjing.oss.settings.ui.ProjectSettingsConfigurable"/>
+
+        <applicationConfigurable
+                id="oss.credential"
+                displayName="Credential"
+                parentId="oss.root"
+                instance="space.zhangjing.oss.settings.ui.CredentialConfigurable"/>
+
+        <notificationGroup
+                id="oss.upload"
+                displayType="BALLOON"
+                isLogByDefault="true"/>
+
+        <toolWindow
+                id="OSS Browser"
+                anchor="right"
+                factoryClass="space.zhangjing.oss.ui.OSSBrowserToolWindowFactory"
+                icon="/icons/oss.svg"
+                canCloseContents="true"/>
+    </extensions>
+
+
+</idea-plugin>
